@@ -6,11 +6,13 @@
 
 ## 功能
 
-- 定期測速（使用 speedtest.net 最近伺服器）
+- 定期測速（使用台灣 ISP 伺服器輕量測速，每次約 0.2~5 MB）
 - 降速自動切換至下一個可用 MAC
+- 切換後自動驗證新 MAC 網速，失敗則繼續嘗試下一個
 - MAC 池管理：追蹤每個 MAC 的限速狀態，跨日自動重置
-- 降速 / 切換成功 / MAC 用完時彈出桌面提示（需手動關閉）
-- GUI 設定畫面：管理 MAC 清單與監控參數
+- MAC 池耗盡時自動暫停監控，等待跨日重置
+- 降速 / 切換成功 / MAC 用完時彈出 Windows 桌面通知（winotify toast）
+- GUI 設定畫面：CustomTkinter 深色主題，管理 MAC 清單與監控參數
 - 系統托盤常駐，右鍵選單操作
 - 開機自動啟動（寫入登錄檔 `HKCU\...\Run`）
 - 自動要求管理員權限（UAC）
@@ -56,7 +58,7 @@ build.bat
 
 ```json
 {
-    "speed_threshold_mbps": 50,
+    "speed_threshold_mbps": 10,
     "check_interval_seconds": 120,
     "cooldown_seconds": 60,
     "adapter_name": "auto",
@@ -75,7 +77,7 @@ build.bat
 
 | 參數 | 說明 | 預設值 |
 |------|------|--------|
-| `speed_threshold_mbps` | 低於此速度判定為降速 (Mbps) | `50` |
+| `speed_threshold_mbps` | 低於此速度判定為降速 (Mbps) | `10` |
 | `check_interval_seconds` | 測速間隔 (秒) | `120` |
 | `cooldown_seconds` | MAC 切換後的冷卻時間 (秒) | `60` |
 | `adapter_name` | 網卡名稱，`auto` 為自動偵測 | `"auto"` |
@@ -114,9 +116,12 @@ build.bat
                       ↓
               從 MAC 池取得下一個可用 MAC
                       ↓
-          有可用 MAC → 修改登錄檔 → 重啟網卡 → 彈窗通知
+          有可用 MAC → 修改登錄檔 → 重啟網卡 → 驗證新 MAC 網速
+                      ↓                              ↓
+                      ↓                    速度正常 → 通知成功（綠色）
+                      ↓                    速度仍低 → 標記此 MAC，嘗試下一個
                       ↓
-          全部用完 → 等待跨日重置（00:00）→ 彈窗通知
+          全部用完 → 暫停監控，等待跨日重置（00:00）→ 通知
 ```
 
 ## 專案結構
@@ -125,18 +130,22 @@ build.bat
 ├── net_guard.py       # 主程式（托盤、控制器、入口）
 ├── mac_changer.py     # MAC 位址切換（登錄檔 + 網卡重啟）
 ├── mac_pool.py        # MAC 池管理（輪替、跨日重置）
-├── speed_test.py      # 網速偵測（speedtest.net）
-├── settings_gui.py    # GUI 設定畫面（tkinter）
+├── speed_test.py      # 網速偵測（台灣 ISP 伺服器輕量測速）
+├── settings_gui.py    # GUI 設定畫面（CustomTkinter 深色主題）
+├── ui_theme.py        # 統一主題（顏色、字型、托盤圖示、通知樣式）
 ├── config.json        # 設定檔
 ├── mac_pool.json      # MAC 使用記錄（自動產生）
+├── logo.png           # 應用程式圖示
+├── logo.ico           # Windows exe 圖示
 ├── requirements.txt   # Python 依賴
 ├── build.bat          # PyInstaller 打包腳本
-└── install.bat        # 快速安裝依賴
+├── install.bat        # 快速安裝依賴
+└── NetGuard.spec      # PyInstaller 打包設定
 ```
 
 ## 注意事項
 
 - 每次切換 MAC 會有約 **7 秒短暫斷線**（停用→啟用網卡 + DHCP 重新取得 IP）
 - MAC 位址必須是組織已註冊的，未註冊的 MAC 無法上網
-- 程式使用 `speedtest.net` 測速，每次測速約消耗 10~40 MB 流量
+- 程式使用台灣 ISP 伺服器（凱擘、台灣大、TWNOC）輕量測速，每次約消耗 0.2~5 MB 流量
 - 日誌檔自動輪替，最大 5 MB x 3 個備份
