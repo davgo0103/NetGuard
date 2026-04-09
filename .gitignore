@@ -1,0 +1,17 @@
+# Build
+build/
+dist/
+*.spec
+
+# Runtime
+net_guard.log
+mac_pool.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
