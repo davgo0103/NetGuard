@@ -52,7 +52,7 @@ def measure_download_speed(timeout: int = 15) -> float | None:
     """
     兩階段測速：
     1. 先下載小檔（~250KB）快速判斷速度
-    2. 若速度 > 50 Mbps，再下載大檔（~4.5MB）取得更準確結果
+    2. 若速度 > 10 Mbps，再下載大檔（~4.5MB）取得更準確結果
     每次消耗約 0.25 ~ 5 MB。
     """
     _patch_stdio()
@@ -69,7 +69,7 @@ def measure_download_speed(timeout: int = 15) -> float | None:
         mbps = (total_bytes * 8) / (elapsed * 1_000_000)
 
         # 若速度很低（被限速），小檔結果就夠用了
-        if mbps < 50:
+        if mbps < 10:
             logger.info(f"測速: {mbps:.2f} Mbps ({total_bytes/1000:.0f} KB / {elapsed:.1f}s) [{name}]")
             return mbps
 

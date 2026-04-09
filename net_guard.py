@@ -31,7 +31,7 @@ ICON_SIZE = 64
 
 def load_config() -> dict:
     defaults = {
-        "speed_threshold_mbps": 50,
+        "speed_threshold_mbps": 10,
         "check_interval_seconds": 120,
         "cooldown_seconds": 60,
         "adapter_name": "auto",

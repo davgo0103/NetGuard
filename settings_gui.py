@@ -74,7 +74,7 @@ class SettingsWindow:
 
     def _load_config(self) -> dict:
         d = {
-            "speed_threshold_mbps": 50, "check_interval_seconds": 120,
+            "speed_threshold_mbps": 10, "check_interval_seconds": 120,
             "cooldown_seconds": 60, "adapter_name": "auto",
             "log_file": "net_guard.log", "max_log_size_mb": 5,
             "auto_start": True, "daily_reset_hour": 0,
@@ -258,7 +258,7 @@ class SettingsWindow:
                      text_color=TEXT_WHITE).pack(anchor="w", padx=12, pady=(4, 10))
 
         settings = [
-            ("\U0001F4C9", "降速閾值", "低於此速度觸發 MAC 切換", "speed_threshold_mbps", 50, "Mbps"),
+            ("\U0001F4C9", "降速閾值", "低於此速度觸發 MAC 切換", "speed_threshold_mbps", 10, "Mbps"),
             ("\u23F1\uFE0F",  "測速間隔", "每隔多久測一次速度", "check_interval_seconds", 120, "秒"),
             ("\u2744\uFE0F",  "冷卻時間", "兩次切換之間的最短間隔", "cooldown_seconds", 60, "秒"),
             ("\U0001F5A5\uFE0F", "網卡名稱", "auto = 自動偵測連線中的網卡", "adapter_name", "auto", ""),
@@ -333,7 +333,7 @@ class SettingsWindow:
 
         for t in [
             "\u2022  正常網速 500~1000 Mbps，降速後 < 5 Mbps",
-            "\u2022  建議閾值設 50 Mbps，可準確判斷降速",
+            "\u2022  建議閾值設 10 Mbps，可準確判斷降速",
             "\u2022  測速間隔建議 60~300 秒",
         ]:
             ctk.CTkLabel(tips_frame, text=f"   {t}", font=font(11),
