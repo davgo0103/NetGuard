@@ -1,9 +1,8 @@
 """
 網速偵測模組
-使用 speedtest.net 最近伺服器測量實際下載速度。
+使用台灣 speedtest 伺服器的小檔測速，每次約消耗 0.2~5 MB。
 """
 
-import io
 import logging
 import os
 import sys
@@ -21,22 +20,71 @@ def _patch_stdio():
         sys.stderr = open(os.devnull, "w")
 
 
-def measure_download_speed(timeout: int = 60) -> float | None:
-    """使用 speedtest-cli 測量下載速度，回傳 Mbps，失敗回傳 None。"""
-    _patch_stdio()
+# 台灣 speedtest 伺服器
+_SPEED_SERVERS = [
+    ("http://nt-speed.kbro.com.tw:8080/speedtest", "凱擘 台南"),
+    ("http://phc-speed.twmbroadband.com:8080/speedtest", "台灣大 彰化"),
+    ("http://tp1-speed.twnoc.net:8080/speedtest", "TWNOC 台北"),
+]
+
+
+def _download(url: str, timeout: int) -> tuple[int, float] | None:
+    """下載檔案，回傳 (bytes, seconds) 或 None。"""
     try:
-        import speedtest
-        st = speedtest.Speedtest()
-        st.get_best_server()
-        download_bps = st.download()  # bits per second
-        mbps = download_bps / 1_000_000
-        server = st.best.get("sponsor", "未知")
-        city = st.best.get("name", "")
-        logger.info(f"測速: {mbps:.2f} Mbps (伺服器: {server} - {city})")
-        return mbps
-    except Exception as e:
-        logger.warning(f"speedtest-cli 測速失敗: {e}")
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        start = time.perf_counter()
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        total = 0
+        while True:
+            chunk = resp.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+        elapsed = time.perf_counter() - start
+        if total < 10_000 or elapsed <= 0:
+            return None
+        return total, elapsed
+    except Exception:
         return None
+
+
+def measure_download_speed(timeout: int = 15) -> float | None:
+    """
+    兩階段測速：
+    1. 先下載小檔（~250KB）快速判斷速度
+    2. 若速度 > 50 Mbps，再下載大檔（~4.5MB）取得更準確結果
+    每次消耗約 0.25 ~ 5 MB。
+    """
+    _patch_stdio()
+
+    for base, name in _SPEED_SERVERS:
+        # 第一階段：小檔快速探測（~250KB）
+        small_url = f"{base}/random350x350.jpg"
+        result = _download(small_url, timeout=8)
+        if not result:
+            logger.debug(f"伺服器 {name} 無回應，嘗試下一台")
+            continue
+
+        total_bytes, elapsed = result
+        mbps = (total_bytes * 8) / (elapsed * 1_000_000)
+
+        # 若速度很低（被限速），小檔結果就夠用了
+        if mbps < 50:
+            logger.info(f"測速: {mbps:.2f} Mbps ({total_bytes/1000:.0f} KB / {elapsed:.1f}s) [{name}]")
+            return mbps
+
+        # 第二階段：速度正常，用大檔測更準確
+        big_url = f"{base}/random1500x1500.jpg"
+        result2 = _download(big_url, timeout=timeout)
+        if result2:
+            total_bytes, elapsed = result2
+            mbps = (total_bytes * 8) / (elapsed * 1_000_000)
+
+        logger.info(f"測速: {mbps:.2f} Mbps ({total_bytes/1000000:.1f} MB / {elapsed:.1f}s) [{name}]")
+        return mbps
+
+    logger.warning("所有測速伺服器皆失敗")
+    return None
 
 
 def quick_connectivity_check() -> bool:
@@ -64,13 +112,10 @@ class SpeedMonitor:
         self.check_interval = check_interval
         self.last_speed: float | None = None
         self.last_check_time: float = 0
-        self.history: list[tuple[float, float]] = []  # (timestamp, speed_mbps)
+        self.history: list[tuple[float, float]] = []
         self.max_history = 50
 
     def check_speed(self) -> tuple[float | None, bool]:
-        """執行一次測速。
-        回傳 (速度Mbps或None, 是否低於閾值)。
-        """
         speed = measure_download_speed()
         self.last_check_time = time.time()
         self.last_speed = speed
@@ -86,14 +131,12 @@ class SpeedMonitor:
         return speed, is_slow
 
     def get_average_speed(self, last_n: int = 5) -> float | None:
-        """取得最近 N 次測速的平均值。"""
         recent = self.history[-last_n:]
         if not recent:
             return None
         return sum(s for _, s in recent) / len(recent)
 
     def get_status_text(self) -> str:
-        """取得目前狀態的文字描述。"""
         if self.last_speed is None:
             return "尚未測速"
         status = f"目前: {self.last_speed:.1f} Mbps"

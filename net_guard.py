@@ -147,6 +147,7 @@ class NetGuardController:
         self.switch_count: int = 0
         self.current_mac: str = ""
         self.current_date: str = date.today().isoformat()
+        self.pool_exhausted: bool = False
         self.status_text: str = "啟動中..."
         self.icon_color: str = "gray"
         self._tray = None
@@ -190,6 +191,8 @@ class NetGuardController:
             self.current_date = today
             self.mac_pool.daily_cleanup()
             self.switch_count = 0
+            self.pool_exhausted = False
+            self.logger.info("MAC 池已重置，恢復監控")
 
     def _monitor_loop(self):
         # 啟動後等幾秒讓網路穩定
@@ -205,6 +208,11 @@ class NetGuardController:
 
             # 檢查跨日重置
             self._check_daily_reset()
+
+            # MAC 池用完，停止監控等跨日
+            if self.pool_exhausted:
+                time.sleep(30)
+                continue
 
             # 先確認網路可用
             from speed_test import quick_connectivity_check
@@ -273,7 +281,8 @@ class NetGuardController:
 
         if not next_mac:
             total = len(self.cfg["mac_list"])
-            self.logger.warning(f"今日所有 MAC 皆已限速 (0/{total})")
+            self.logger.warning(f"今日所有 MAC 皆已限速 (0/{total})，暫停監控等跨日")
+            self.pool_exhausted = True
             self.status_text = "今日 MAC 已全部用完，等待跨日重置"
             self.icon_color = "red"
             self._update_tray()
@@ -310,24 +319,62 @@ class NetGuardController:
             self._update_tray()
             return
 
-        # 成功
+        # 切換成功，等待網路穩定後驗證
         self.current_mac = next_mac
         self.switch_count += 1
         self.last_switch_time = time.time()
 
-        pool_info = self.mac_pool.get_summary()
-        self.status_text = f"已切換至 {fmt(next_mac)} | {pool_info}"
-        self.icon_color = "green"
-        self.logger.info(f"MAC 切換成功 (今日第{self.switch_count}次)")
+        fmt_mac = fmt(next_mac)
+        self.status_text = f"已切換至 {fmt_mac}，驗證中..."
+        self.icon_color = "yellow"
+        self.logger.info(f"MAC 切換成功 (今日第{self.switch_count}次)，等待驗證")
         self._update_tray()
 
-        show_alert(
-            "NetGuard - MAC 已切換",
-            f"已切換至: {fmt(next_mac)}\n"
-            f"今日第 {self.switch_count} 次切換",
-            alert_type="success",
-            detail=pool_info
-        )
+        # 等網路重新連線
+        time.sleep(5)
+
+        # 驗證新 MAC 是否可用
+        verify_speed, verify_slow = self.speed_monitor.check_speed()
+
+        if verify_speed is None:
+            # 測速失敗，可能網路還沒恢復，先當作成功
+            pool_info = self.mac_pool.get_summary()
+            self.status_text = f"已切換至 {fmt_mac}（驗證失敗）| {pool_info}"
+            self.icon_color = "yellow"
+            self._update_tray()
+            self.logger.warning(f"切換後驗證測速失敗，保留 {fmt_mac}")
+            show_alert(
+                "NetGuard - MAC 已切換",
+                f"已切換至: {fmt_mac}\n驗證測速失敗，請留意網速",
+                alert_type="warning",
+                detail=self.mac_pool.get_summary()
+            )
+        elif verify_slow:
+            # 新 MAC 也是慢的，標記為限速並繼續切換下一個
+            self.logger.warning(f"{fmt_mac} 驗證失敗: {verify_speed:.1f} Mbps，標記限速")
+            self.mac_pool.mark_throttled(next_mac)
+            show_alert(
+                "NetGuard - MAC 驗證失敗",
+                f"{fmt_mac} 速度僅 {verify_speed:.1f} Mbps\n已標記為限速，自動切換下一個",
+                alert_type="warning",
+                detail=self.mac_pool.get_summary()
+            )
+            # 遞迴切換下一個（冷卻時間已更新，不會無限迴圈因為 MAC 會用完）
+            self._do_mac_switch()
+        else:
+            # 驗證通過
+            pool_info = self.mac_pool.get_summary()
+            self.status_text = f"已切換至 {fmt_mac} ({verify_speed:.0f} Mbps) | {pool_info}"
+            self.icon_color = "green"
+            self._update_tray()
+            self.logger.info(f"{fmt_mac} 驗證通過: {verify_speed:.1f} Mbps")
+            show_alert(
+                "NetGuard - MAC 已切換",
+                f"已切換至: {fmt_mac}\n"
+                f"驗證速度: {verify_speed:.1f} Mbps ✓",
+                alert_type="success",
+                detail=pool_info
+            )
 
     def _update_tray(self):
         if self._tray:
