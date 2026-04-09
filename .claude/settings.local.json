@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(pip install:*)",
-      "Bash(pyinstaller:*)"
+      "Bash(pyinstaller:*)",
+      "Bash(python -c \"import customtkinter; print\\('ctk ok'\\)\")",
+      "Bash(python -c \"import pystray; print\\('pystray ok'\\)\")",
+      "Bash(python -c \"import speedtest; print\\('speedtest ok'\\)\")",
+      "Bash(python -c \"from PIL import Image; print\\('pillow ok'\\)\")",
+      "Bash(python:*)",
+      "Bash(taskkill //F //IM NetGuard.exe)",
+      "Bash(tasklist)"
     ]
   }
 }

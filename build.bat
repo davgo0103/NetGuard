@@ -1,58 +1,60 @@
 @echo off
-chcp 65001 >nul
 echo ====================================
-echo   NetGuard 打包工具
+echo   NetGuard Build Tool
 echo ====================================
 echo.
 
-:: 檢查 Python
+:: Check Python
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [錯誤] 找不到 Python，請先安裝 Python 3.10+
+    echo [ERROR] Python not found. Please install Python 3.10+
     pause
     exit /b 1
 )
 
-:: 安裝依賴
-echo [1/3] 安裝依賴套件...
+:: Install dependencies
+echo [1/3] Installing dependencies...
 pip install -r requirements.txt
 if errorlevel 1 (
-    echo [錯誤] 安裝依賴失敗
+    echo [ERROR] Failed to install dependencies
     pause
     exit /b 1
 )
 
-:: 打包
+:: Build
 echo.
-echo [2/3] 使用 PyInstaller 打包...
+echo [2/3] Building with PyInstaller...
 pyinstaller --noconfirm --onefile --windowed ^
     --name NetGuard ^
     --add-data "config.json;." ^
-    --icon NONE ^
+    --add-data "logo.png;." ^
+    --icon logo.ico ^
     --uac-admin ^
+    --collect-data customtkinter ^
     net_guard.py
 
 if errorlevel 1 (
-    echo [錯誤] 打包失敗
+    echo [ERROR] Build failed
     pause
     exit /b 1
 )
 
-:: 複製設定檔到輸出目錄
+:: Copy assets to output directory
 echo.
-echo [3/3] 複製設定檔...
+echo [3/3] Copying assets...
 copy /Y config.json dist\config.json >nul
+copy /Y logo.png dist\logo.png >nul
 
 echo.
 echo ====================================
-echo   打包完成！
-echo   輸出: dist\NetGuard.exe
-echo   設定: dist\config.json
+echo   Build complete!
+echo   Output: dist\NetGuard.exe
+echo   Config: dist\config.json
 echo ====================================
 echo.
-echo 使用方式：
-echo   1. 以管理員身份執行 dist\NetGuard.exe
-echo   2. 程式會常駐在系統托盤
-echo   3. 右鍵托盤圖示可操作
+echo Usage:
+echo   1. Run dist\NetGuard.exe as Administrator
+echo   2. Program will stay in system tray
+echo   3. Right-click tray icon for options
 echo.
 pause

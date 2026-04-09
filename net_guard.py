@@ -120,51 +120,16 @@ def set_autostart(enable: bool):
         logging.getLogger("NetGuard").error(f"設定開機啟動失敗: {e}")
 
 
-# ── 圖示產生 ──────────────────────────────────────────────
+# ── 圖示 & 彈窗（使用 ui_theme）────────────────────────────
 
 def create_icon_image(color: str = "green"):
-    """用 Pillow 產生簡單的狀態圖示。"""
-    from PIL import Image, ImageDraw, ImageFont
-
-    colors = {
-        "green": "#4CAF50",
-        "yellow": "#FFC107",
-        "red": "#F44336",
-        "gray": "#9E9E9E",
-    }
-    bg = colors.get(color, colors["green"])
-
-    img = Image.new("RGBA", (ICON_SIZE, ICON_SIZE), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-
-    # 圓形底色
-    draw.ellipse([4, 4, ICON_SIZE - 4, ICON_SIZE - 4], fill=bg)
-
-    # 中央文字 "N"
-    try:
-        font = ImageFont.truetype("arial.ttf", 32)
-    except Exception:
-        font = ImageFont.load_default()
-
-    bbox = draw.textbbox((0, 0), "N", font=font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
-    tx = (ICON_SIZE - tw) // 2
-    ty = (ICON_SIZE - th) // 2 - 2
-    draw.text((tx, ty), "N", fill="white", font=font)
-
-    return img
+    from ui_theme import create_tray_icon
+    return create_tray_icon(color, ICON_SIZE)
 
 
-# ── 彈窗提示 ──────────────────────────────────────────────
-
-def show_alert(title: str, message: str):
-    """在新執行緒中顯示 Windows 彈窗（需手動關閉）。"""
-    def _show():
-        # MB_OK | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND
-        flags = 0x00000000 | 0x00000030 | 0x00040000 | 0x00010000
-        ctypes.windll.user32.MessageBoxW(0, message, title, flags)
-    threading.Thread(target=_show, daemon=True).start()
+def show_alert(title: str, message: str, alert_type: str = "warning", detail: str = ""):
+    from ui_theme import show_alert as _show
+    _show(title, message, alert_type, detail)
 
 
 # ── 主控制器 ──────────────────────────────────────────────
@@ -273,10 +238,10 @@ class NetGuardController:
                 mac_display = self.mac_pool._format(self.current_mac) if self.current_mac else "未知"
                 show_alert(
                     "NetGuard - 偵測到降速",
-                    f"目前網速: {speed:.1f} Mbps（低於閾值 {self.cfg['speed_threshold_mbps']} Mbps）\n"
-                    f"目前 MAC: {mac_display}\n"
-                    f"{self.mac_pool.get_summary()}\n\n"
-                    f"正在自動切換 MAC 位址..."
+                    f"目前網速: {speed:.1f} Mbps\n"
+                    f"低於閾值 {self.cfg['speed_threshold_mbps']} Mbps",
+                    alert_type="warning",
+                    detail=f"目前 MAC: {mac_display}  |  {self.mac_pool.get_summary()}\n正在自動切換 MAC 位址..."
                 )
 
                 # 檢查冷卻時間
@@ -314,9 +279,9 @@ class NetGuardController:
             self._update_tray()
             show_alert(
                 "NetGuard - MAC 位址已用完",
-                f"今日 {total} 個 MAC 位址皆已達流量限制。\n\n"
-                f"目前網速將維持在限速狀態，\n"
-                f"跨日（00:00）後將自動重置。"
+                f"今日 {total} 個 MAC 位址皆已達流量限制",
+                alert_type="error",
+                detail="目前網速將維持在限速狀態，跨日（00:00）後將自動重置"
             )
             return
 
@@ -359,8 +324,9 @@ class NetGuardController:
         show_alert(
             "NetGuard - MAC 已切換",
             f"已切換至: {fmt(next_mac)}\n"
-            f"今日第 {self.switch_count} 次切換\n"
-            f"{pool_info}"
+            f"今日第 {self.switch_count} 次切換",
+            alert_type="success",
+            detail=pool_info
         )
 
     def _update_tray(self):
