@@ -151,6 +151,9 @@ class NetGuardController:
         self.status_text: str = "啟動中..."
         self.icon_color: str = "gray"
         self._tray = None
+        # 連續網路失敗計數（連線失敗 / 測速失敗），達門檻後觸發 MAC 切換
+        self.fail_count: int = 0
+        self.max_fails_before_switch: int = 2
 
         from speed_test import SpeedMonitor
         from mac_pool import MacPool
@@ -217,11 +220,17 @@ class NetGuardController:
             # 先確認網路可用
             from speed_test import quick_connectivity_check
             if not quick_connectivity_check():
+                self.fail_count += 1
                 self.icon_color = "red"
-                self.status_text = "無網路連線"
+                self.status_text = f"無網路連線 ({self.fail_count}/{self.max_fails_before_switch})"
                 self._update_tray()
-                self.logger.warning("網路不通，等待重試...")
-                time.sleep(30)
+                self.logger.warning(
+                    f"網路不通 (第 {self.fail_count}/{self.max_fails_before_switch} 次)"
+                )
+                if self.fail_count >= self.max_fails_before_switch:
+                    self._handle_network_failure(f"連續 {self.fail_count} 次無法連線")
+                else:
+                    time.sleep(30)
                 continue
 
             # 測速
@@ -232,11 +241,21 @@ class NetGuardController:
             speed, is_slow = self.speed_monitor.check_speed()
 
             if speed is None:
+                self.fail_count += 1
                 self.icon_color = "red"
-                self.status_text = "測速失敗"
+                self.status_text = f"測速失敗 ({self.fail_count}/{self.max_fails_before_switch})"
                 self._update_tray()
-                time.sleep(30)
+                self.logger.warning(
+                    f"測速失敗 (第 {self.fail_count}/{self.max_fails_before_switch} 次)"
+                )
+                if self.fail_count >= self.max_fails_before_switch:
+                    self._handle_network_failure(f"連續 {self.fail_count} 次測速失敗")
+                else:
+                    time.sleep(30)
                 continue
+
+            # 測速成功，重置失敗計數
+            self.fail_count = 0
 
             if is_slow:
                 # 降速：標記目前 MAC 為已限速，切換新 MAC
@@ -272,6 +291,23 @@ class NetGuardController:
                 self._update_tray()
 
             time.sleep(self.cfg["check_interval_seconds"])
+
+    def _handle_network_failure(self, reason: str):
+        """連續網路失敗時觸發：標記目前 MAC 為限速，切換下一個。"""
+        if self.current_mac:
+            self.mac_pool.mark_throttled(self.current_mac)
+
+        mac_display = self.mac_pool._format(self.current_mac) if self.current_mac else "未知"
+        self.logger.warning(f"{reason}，嘗試切換 MAC")
+        show_alert(
+            "NetGuard - 網路失敗",
+            f"{reason}\n正在切換 MAC 位址...",
+            alert_type="warning",
+            detail=f"目前 MAC: {mac_display}  |  {self.mac_pool.get_summary()}"
+        )
+
+        self.fail_count = 0
+        self._do_mac_switch()
 
     def _do_mac_switch(self):
         from mac_changer import set_mac_address, find_active_adapter, restart_adapter
