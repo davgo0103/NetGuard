@@ -10,7 +10,9 @@ import json
 import logging
 import logging.handlers
 import os
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import winreg
@@ -85,39 +87,209 @@ def setup_logging(cfg: dict) -> logging.Logger:
     return logger
 
 
-# ── 開機啟動 ──────────────────────────────────────────────
+# ── 開機啟動（Task Scheduler）─────────────────────────────
+# 使用 Task Scheduler 而非 HKCU\...\Run，原因：
+# exe 內嵌 uac_admin manifest（需管理員權限），若走 Run key
+# 則每次開機都會跳 UAC 提示。Task Scheduler 以「最高權限」
+# 執行可在開機時靜默取得 admin，完全不干擾使用者。
 
-STARTUP_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
-STARTUP_KEY_NAME = "NetGuard"
+TASK_NAME = "NetGuard"
+LEGACY_RUN_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+LEGACY_RUN_KEY_NAME = "NetGuard"
+
+TASK_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>NetGuard - Auto MAC switcher for throttled networks</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{command}</Command>
+      <Arguments>{arguments}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def _run_schtasks(args: list[str]) -> subprocess.CompletedProcess:
+    """執行 schtasks 命令，隱藏視窗。"""
+    return subprocess.run(
+        ["schtasks", *args],
+        capture_output=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+def _xml_escape(s: str) -> str:
+    return (
+        s.replace("&", "&amp;")
+         .replace("<", "&lt;")
+         .replace(">", "&gt;")
+    )
+
+
+def _get_current_target() -> tuple[str, str]:
+    """取得目前應執行的 (command, arguments)。"""
+    if getattr(sys, "frozen", False):
+        return sys.executable, ""
+    return sys.executable, f'"{Path(__file__).resolve()}"'
+
+
+def _remove_legacy_run_key():
+    """移除舊版使用的 HKCU\\...\\Run 登錄檔項目（升級清理用）。"""
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, LEGACY_RUN_REG_PATH, 0, winreg.KEY_SET_VALUE
+        )
+        try:
+            winreg.DeleteValue(key, LEGACY_RUN_KEY_NAME)
+            logging.getLogger("NetGuard").info("已清除舊版 Run 登錄檔開機啟動項目")
+        except FileNotFoundError:
+            pass
+        winreg.CloseKey(key)
+    except OSError:
+        pass
 
 
 def is_autostart_enabled() -> bool:
+    """檢查 Task Scheduler 是否已建立 NetGuard 任務。"""
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_READ)
-        winreg.QueryValueEx(key, STARTUP_KEY_NAME)
-        winreg.CloseKey(key)
-        return True
-    except FileNotFoundError:
+        result = _run_schtasks(["/Query", "/TN", TASK_NAME])
+        return result.returncode == 0
+    except Exception:
         return False
 
 
-def set_autostart(enable: bool):
+def get_autostart_target() -> tuple[str, str] | None:
+    """取得目前 Task Scheduler 任務指向的 (command, arguments)，若無任務回傳 None。"""
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_SET_VALUE)
-        if enable:
-            if getattr(sys, "frozen", False):
-                exe_path = sys.executable
-            else:
-                exe_path = f'"{sys.executable}" "{Path(__file__).resolve()}"'
-            winreg.SetValueEx(key, STARTUP_KEY_NAME, 0, winreg.REG_SZ, exe_path)
+        result = _run_schtasks(["/Query", "/TN", TASK_NAME, "/XML"])
+        if result.returncode != 0:
+            return None
+        # schtasks /XML 輸出為 UTF-16 LE with BOM
+        raw = result.stdout
+        try:
+            text = raw.decode("utf-16")
+        except UnicodeDecodeError:
+            text = raw.decode("utf-8", errors="replace")
+        import re
+        cmd_match = re.search(r"<Command>(.*?)</Command>", text, re.DOTALL)
+        arg_match = re.search(r"<Arguments>(.*?)</Arguments>", text, re.DOTALL)
+        if not cmd_match:
+            return None
+        cmd = cmd_match.group(1).strip()
+        args = arg_match.group(1).strip() if arg_match else ""
+        # 還原 XML escape
+        for a, b in [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">")]:
+            cmd = cmd.replace(a, b)
+            args = args.replace(a, b)
+        return cmd, args
+    except Exception:
+        return None
+
+
+def set_autostart(enable: bool):
+    """
+    設定開機啟動（使用 Task Scheduler，以最高權限執行，避免 UAC 提示）。
+    同時清理舊版 Run 登錄檔項目。
+    """
+    logger = logging.getLogger("NetGuard")
+    _remove_legacy_run_key()
+
+    if not enable:
+        try:
+            result = _run_schtasks(["/Delete", "/TN", TASK_NAME, "/F"])
+            if result.returncode == 0:
+                logger.info("已移除開機啟動任務")
+        except Exception as e:
+            logger.error(f"移除開機啟動任務失敗: {e}")
+        return
+
+    command, arguments = _get_current_target()
+    xml_content = TASK_XML_TEMPLATE.format(
+        command=_xml_escape(command),
+        arguments=_xml_escape(arguments),
+    )
+
+    # schtasks 要求 UTF-16 LE with BOM
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".xml", delete=False
+        ) as f:
+            f.write(xml_content.encode("utf-16"))
+            xml_path = f.name
+    except Exception as e:
+        logger.error(f"寫入 Task XML 失敗: {e}")
+        return
+
+    try:
+        result = _run_schtasks([
+            "/Create", "/TN", TASK_NAME, "/XML", xml_path, "/F",
+        ])
+        if result.returncode == 0:
+            logger.info(f"已建立開機啟動任務 → {command} {arguments}")
         else:
-            try:
-                winreg.DeleteValue(key, STARTUP_KEY_NAME)
-            except FileNotFoundError:
-                pass
-        winreg.CloseKey(key)
-    except OSError as e:
-        logging.getLogger("NetGuard").error(f"設定開機啟動失敗: {e}")
+            stderr = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+            logger.error(f"建立開機啟動任務失敗: {stderr.strip()}")
+    finally:
+        try:
+            os.unlink(xml_path)
+        except Exception:
+            pass
+
+
+def sync_autostart(cfg: dict):
+    """
+    啟動時同步 Task Scheduler 狀態與 config：
+    - config.auto_start=true 但任務不存在 → 建立
+    - config.auto_start=true 且任務存在但路徑錯誤（exe 已搬移）→ 重建
+    - config.auto_start=false 但任務存在 → 移除
+    """
+    want = bool(cfg.get("auto_start"))
+    enabled = is_autostart_enabled()
+
+    if not want:
+        if enabled:
+            set_autostart(False)
+        return
+
+    expected = _get_current_target()
+    current = get_autostart_target() if enabled else None
+
+    if current is None:
+        set_autostart(True)
+    elif current != expected:
+        logging.getLogger("NetGuard").info(
+            f"開機啟動路徑已變更，重新建立任務: {current} → {expected}"
+        )
+        set_autostart(True)
 
 
 # ── 圖示 & 彈窗（使用 ui_theme）────────────────────────────
@@ -440,8 +612,14 @@ def run_tray(controller: NetGuardController):
         ).start()
 
     def on_toggle_autostart(icon, item):
-        current = is_autostart_enabled()
-        set_autostart(not current)
+        new_state = not is_autostart_enabled()
+        set_autostart(new_state)
+        # 同步寫回 config，避免下次啟動時 sync_autostart 又依 config 強制覆蓋
+        controller.cfg["auto_start"] = new_state
+        try:
+            save_config(controller.cfg)
+        except Exception as e:
+            controller.logger.error(f"儲存 auto_start 設定失敗: {e}")
 
     def on_open_log(icon, item):
         log_path = APP_DIR / controller.cfg["log_file"]
@@ -508,9 +686,11 @@ def run_tray(controller: NetGuardController):
 
     controller._tray = icon
 
-    # 設定開機啟動（首次執行時）
-    if controller.cfg.get("auto_start") and not is_autostart_enabled():
-        set_autostart(True)
+    # 同步開機啟動狀態：建立 / 更新路徑 / 清除舊 Run key
+    try:
+        sync_autostart(controller.cfg)
+    except Exception as e:
+        controller.logger.error(f"同步開機啟動狀態失敗: {e}")
 
     controller.start()
     icon.run()
