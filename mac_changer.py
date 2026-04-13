@@ -83,7 +83,7 @@ def get_adapter_list() -> list[dict]:
 
 
 def find_active_adapter(adapter_name: str = "auto") -> dict | None:
-    """尋找目前使用中的網路卡。"""
+    """尋找目前使用中的實體網路卡（自動排除 VPN / 虛擬網卡）。"""
     adapters = get_adapter_list()
     if not adapters:
         return None
@@ -94,7 +94,38 @@ def find_active_adapter(adapter_name: str = "auto") -> dict | None:
                 return a
         return None
 
-    # 用 PowerShell 取得已連線的網卡 InterfaceGuid
+    # 用 PowerShell 取得已連線的「實體」網卡（HardwareInterface=true 排除 VPN / VM）
+    active_guids: list[str] = []
+    try:
+        result = _run_cmd([
+            "powershell", "-NoProfile", "-Command",
+            "Get-NetAdapter | Where-Object {"
+            "$_.Status -eq 'Up' -and $_.HardwareInterface -eq $true"
+            "} | Select-Object -Property InterfaceGuid, Name, InterfaceDescription | "
+            "ForEach-Object { \"$($_.InterfaceGuid)|$($_.Name)|$($_.InterfaceDescription)\" }"
+        ])
+        if result.stdout:
+            for line in result.stdout.strip().splitlines():
+                parts = line.strip().split("|", 2)
+                guid = parts[0].strip("{}") if parts else ""
+                name = parts[1] if len(parts) > 1 else ""
+                desc = parts[2] if len(parts) > 2 else ""
+                if guid:
+                    logger.debug(f"偵測到實體網卡: {name} ({desc}) [{guid}]")
+                    active_guids.append(guid.lower())
+    except Exception as e:
+        logger.warning(f"PowerShell 偵測實體網卡失敗: {e}")
+
+    # 若 HardwareInterface 過濾有結果，用它匹配登錄檔
+    if active_guids:
+        for guid in active_guids:
+            for a in adapters:
+                if a["net_cfg_id"].strip("{}").lower() == guid:
+                    logger.info(f"自動選擇網卡: {a['driver_desc']}")
+                    return a
+
+    # Fallback：取得所有 Up 的網卡，但用黑名單過濾掉虛擬 / VPN
+    logger.debug("HardwareInterface 過濾無結果，fallback 到關鍵字過濾")
     try:
         result = _run_cmd([
             "powershell", "-NoProfile", "-Command",
@@ -107,17 +138,41 @@ def find_active_adapter(adapter_name: str = "auto") -> dict | None:
                 guid = line.strip().strip("{}")
                 for a in adapters:
                     if a["net_cfg_id"].strip("{}").lower() == guid.lower():
+                        if _is_virtual_adapter(a["driver_desc"]):
+                            logger.debug(f"跳過虛擬/VPN 網卡: {a['driver_desc']}")
+                            continue
+                        logger.info(f"自動選擇網卡 (fallback): {a['driver_desc']}")
                         return a
     except Exception as e:
-        logger.warning(f"PowerShell 偵測網卡失敗: {e}")
+        logger.warning(f"PowerShell fallback 偵測失敗: {e}")
 
-    # fallback：回傳常見網卡
+    # 最後 fallback：常見實體網卡關鍵字
     for a in adapters:
         desc = a["driver_desc"].lower()
         if any(kw in desc for kw in ["wi-fi", "wifi", "wireless", "ethernet", "realtek", "intel"]):
-            return a
+            if not _is_virtual_adapter(a["driver_desc"]):
+                logger.info(f"自動選擇網卡 (keyword fallback): {a['driver_desc']}")
+                return a
 
     return adapters[0] if adapters else None
+
+
+# 已知的虛擬 / VPN 網卡關鍵字（小寫比對）
+_VIRTUAL_ADAPTER_KEYWORDS = [
+    "vpn", "virtual", "tap-", "tap ", "tun ", "wireguard", "warp",
+    "hyper-v", "vmware", "virtualbox", "vbox", "loopback",
+    "bluetooth", "miniport", "wan miniport", "teredo",
+    "6to4", "isatap", "fortinet", "forticlient", "juniper",
+    "cisco anyconnect", "pangp", "palo alto", "softether",
+    "nordlynx", "proton", "surfshark", "express",
+    "windscribe", "mullvad", "openvpn",
+]
+
+
+def _is_virtual_adapter(driver_desc: str) -> bool:
+    """根據驅動描述判斷是否為虛擬 / VPN 網卡。"""
+    desc = driver_desc.lower()
+    return any(kw in desc for kw in _VIRTUAL_ADAPTER_KEYWORDS)
 
 
 def get_adapter_interface_name(net_cfg_id: str) -> str | None:
