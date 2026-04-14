@@ -104,8 +104,29 @@ def quick_connectivity_check() -> bool:
     return False
 
 
+def measure_system_bandwidth(interval: float = 2.0) -> float:
+    """
+    測量系統目前的網路下載頻寬（Mbps），取 interval 秒內的平均值。
+    用於判斷使用者是否正在大量下載，避免測速時誤判為限速。
+    """
+    try:
+        import psutil
+        c1 = psutil.net_io_counters()
+        time.sleep(interval)
+        c2 = psutil.net_io_counters()
+        recv_mbps = (c2.bytes_recv - c1.bytes_recv) * 8 / (interval * 1_000_000)
+        logger.debug(f"系統目前下載頻寬: {recv_mbps:.2f} Mbps")
+        return recv_mbps
+    except Exception as e:
+        logger.debug(f"讀取系統頻寬失敗: {e}")
+        return 0.0
+
+
 class SpeedMonitor:
     """持續監控網速的類別。"""
+
+    # 系統頻寬高於此值時視為「使用者正在下載」，跳過測速（Mbps）
+    BUSY_THRESHOLD_MBPS = 5.0
 
     def __init__(self, threshold_mbps: float = 10.0, check_interval: int = 180):
         self.threshold_mbps = threshold_mbps
@@ -114,6 +135,12 @@ class SpeedMonitor:
         self.last_check_time: float = 0
         self.history: list[tuple[float, float]] = []
         self.max_history = 50
+        self.skipped_busy: bool = False  # 上次是否因使用者下載而跳過
+
+    def is_system_busy(self) -> tuple[bool, float]:
+        """檢查系統是否正在大量使用網路。回傳 (is_busy, current_mbps)。"""
+        bandwidth = measure_system_bandwidth(interval=2.0)
+        return bandwidth >= self.BUSY_THRESHOLD_MBPS, bandwidth
 
     def check_speed(self) -> tuple[float | None, bool]:
         speed = measure_download_speed()

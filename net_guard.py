@@ -409,6 +409,19 @@ class NetGuardController:
                     time.sleep(30)
                 continue
 
+            # 測速前：檢查系統是否正在大量下載
+            busy, sys_bw = self.speed_monitor.is_system_busy()
+            if busy:
+                self.logger.info(
+                    f"系統正在使用網路 ({sys_bw:.1f} Mbps)，跳過本次測速"
+                )
+                pool_info = self.mac_pool.get_summary()
+                self.icon_color = "green"
+                self.status_text = f"使用者下載中 ({sys_bw:.0f} Mbps)，跳過測速 | {pool_info}"
+                self._update_tray()
+                time.sleep(self.cfg["check_interval_seconds"])
+                continue
+
             # 測速
             self.status_text = "測速中..."
             self.icon_color = "yellow"
