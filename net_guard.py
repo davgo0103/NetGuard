@@ -323,6 +323,7 @@ class NetGuardController:
         self.status_text: str = "啟動中..."
         self.icon_color: str = "gray"
         self._tray = None
+        self._active_adapter: dict | None = None  # 記住選中的網卡，避免切換時跳到別張
         # 連續網路失敗計數（連線失敗 / 測速失敗），達門檻後觸發 MAC 切換
         self.fail_count: int = 0
         self.max_fails_before_switch: int = 2
@@ -367,6 +368,7 @@ class NetGuardController:
             self.mac_pool.daily_cleanup()
             self.switch_count = 0
             self.pool_exhausted = False
+            self._active_adapter = None  # 跨日重新偵測網卡
             self.logger.info("MAC 池已重置，恢復監控")
 
     def _monitor_loop(self):
@@ -502,7 +504,15 @@ class NetGuardController:
             )
             return
 
-        adapter = find_active_adapter(self.cfg["adapter_name"])
+        # 重用已記住的網卡，避免遞迴切換時跳到 Wi-Fi 或其他網卡
+        if self._active_adapter:
+            adapter = self._active_adapter
+        else:
+            adapter = find_active_adapter(self.cfg["adapter_name"])
+            if adapter:
+                self._active_adapter = adapter
+                self.logger.info(f"鎖定網卡: {adapter['driver_desc']}")
+
         if not adapter:
             self.logger.error("找不到可用的網路卡")
             self.status_text = "找不到網路卡"
@@ -538,8 +548,24 @@ class NetGuardController:
         self.logger.info(f"MAC 切換成功 (今日第{self.switch_count}次)，等待驗證")
         self._update_tray()
 
-        # 等網路重新連線
-        time.sleep(5)
+        # 等待網路重新連線（poll 連線狀態，最多 30 秒）
+        from speed_test import quick_connectivity_check
+        self.status_text = f"已切換至 {fmt_mac}，等待網路恢復..."
+        self._update_tray()
+        connected = False
+        for wait_i in range(6):  # 最多 6 輪 × 5 秒 = 30 秒
+            time.sleep(5)
+            if quick_connectivity_check():
+                connected = True
+                self.logger.info(f"網路已恢復 (等待 {(wait_i + 1) * 5} 秒)")
+                break
+            self.logger.debug(f"等待網路恢復中... ({(wait_i + 1) * 5}s)")
+
+        if not connected:
+            self.logger.warning("切換後 30 秒仍無法連線")
+
+        # 再等幾秒讓 DHCP 完全穩定後測速
+        time.sleep(3)
 
         # 驗證新 MAC 是否可用
         verify_speed, verify_slow = self.speed_monitor.check_speed()
