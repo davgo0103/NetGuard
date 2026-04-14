@@ -94,7 +94,30 @@ def find_active_adapter(adapter_name: str = "auto") -> dict | None:
                 return a
         return None
 
-    # 用 PowerShell 取得已連線的「實體」網卡（HardwareInterface=true 排除 VPN / VM）
+    # 優先：找到有 default gateway（實際上網）的實體網卡
+    try:
+        result = _run_cmd([
+            "powershell", "-NoProfile", "-Command",
+            # 取得 default route 的 InterfaceIndex，再查對應的 NetAdapter
+            "$idx = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue "
+            "| Sort-Object RouteMetric | Select-Object -First 1).ifIndex; "
+            "if ($idx) { Get-NetAdapter -InterfaceIndex $idx -ErrorAction SilentlyContinue "
+            "| ForEach-Object { \"$($_.InterfaceGuid)|$($_.Name)|$($_.InterfaceDescription)\" } }"
+        ])
+        if result.stdout and result.stdout.strip():
+            parts = result.stdout.strip().split("|", 2)
+            gw_guid = parts[0].strip("{}").lower() if parts else ""
+            gw_name = parts[1] if len(parts) > 1 else ""
+            gw_desc = parts[2] if len(parts) > 2 else ""
+            if gw_guid:
+                for a in adapters:
+                    if a["net_cfg_id"].strip("{}").lower() == gw_guid:
+                        logger.info(f"自動選擇網卡 (default gateway): {gw_name} ({gw_desc})")
+                        return a
+    except Exception as e:
+        logger.warning(f"Default gateway 偵測失敗: {e}")
+
+    # 次選：所有 Up 的實體網卡（HardwareInterface=true 排除 VPN / VM）
     active_guids: list[str] = []
     try:
         result = _run_cmd([

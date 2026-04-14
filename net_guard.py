@@ -324,11 +324,9 @@ class NetGuardController:
         self.icon_color: str = "gray"
         self._tray = None
         self._active_adapter: dict | None = None  # 記住選中的網卡，避免切換時跳到別張
-        # 連續異常計數，達門檻後才觸發 MAC 切換（避免偶發誤判）
-        self.fail_count: int = 0          # 連線失敗 / 測速失敗
-        self.slow_count: int = 0          # 連續低速
+        # 連續網路失敗計數（連線失敗 / 測速失敗），達門檻後觸發 MAC 切換
+        self.fail_count: int = 0
         self.max_fails_before_switch: int = 2
-        self.max_slow_before_switch: int = 2  # 連續 N 次低速才切換（避免使用者下載中誤判）
 
         from speed_test import SpeedMonitor
         from mac_pool import MacPool
@@ -450,51 +448,34 @@ class NetGuardController:
             self.fail_count = 0
 
             if is_slow:
-                self.slow_count += 1
-                self.logger.warning(
-                    f"低速 {speed:.1f} Mbps "
-                    f"(第 {self.slow_count}/{self.max_slow_before_switch} 次)"
+                # 系統頻寬低（已通過上方 is_system_busy 檢查）且測速低
+                # → 確認為限速，立即切換
+                if self.current_mac:
+                    self.mac_pool.mark_throttled(self.current_mac)
+
+                mac_display = self.mac_pool._format(self.current_mac) if self.current_mac else "未知"
+                show_alert(
+                    "NetGuard - 偵測到降速",
+                    f"目前網速: {speed:.1f} Mbps\n"
+                    f"低於閾值 {self.cfg['speed_threshold_mbps']} Mbps",
+                    alert_type="warning",
+                    detail=f"目前 MAC: {mac_display}  |  {self.mac_pool.get_summary()}\n正在自動切換 MAC 位址..."
                 )
 
-                if self.slow_count < self.max_slow_before_switch:
-                    # 還沒達門檻，可能是使用者在下載，先觀察
+                # 檢查冷卻時間
+                elapsed = time.time() - self.last_switch_time
+                if elapsed >= self.cfg["cooldown_seconds"]:
+                    pool_info = self.mac_pool.get_summary()
+                    self.status_text = f"降速 {speed:.1f} Mbps | {pool_info}"
                     self.icon_color = "yellow"
-                    self.status_text = (
-                        f"低速 {speed:.1f} Mbps "
-                        f"({self.slow_count}/{self.max_slow_before_switch})"
-                    )
                     self._update_tray()
+                    self._do_mac_switch()
                 else:
-                    # 連續多次低速，確認為限速，執行切換
-                    self.slow_count = 0
-                    if self.current_mac:
-                        self.mac_pool.mark_throttled(self.current_mac)
-
-                    mac_display = self.mac_pool._format(self.current_mac) if self.current_mac else "未知"
-                    show_alert(
-                        "NetGuard - 偵測到降速",
-                        f"連續 {self.max_slow_before_switch} 次低於閾值 "
-                        f"{self.cfg['speed_threshold_mbps']} Mbps\n"
-                        f"最後測速: {speed:.1f} Mbps",
-                        alert_type="warning",
-                        detail=f"目前 MAC: {mac_display}  |  {self.mac_pool.get_summary()}\n正在自動切換 MAC 位址..."
-                    )
-
-                    # 檢查冷卻時間
-                    elapsed = time.time() - self.last_switch_time
-                    if elapsed >= self.cfg["cooldown_seconds"]:
-                        pool_info = self.mac_pool.get_summary()
-                        self.status_text = f"降速 {speed:.1f} Mbps | {pool_info}"
-                        self.icon_color = "yellow"
-                        self._update_tray()
-                        self._do_mac_switch()
-                    else:
-                        remaining = int(self.cfg["cooldown_seconds"] - elapsed)
-                        self.status_text = f"降速 {speed:.1f} Mbps | 冷卻中 ({remaining}s)"
-                        self.icon_color = "yellow"
-                        self._update_tray()
+                    remaining = int(self.cfg["cooldown_seconds"] - elapsed)
+                    self.status_text = f"降速 {speed:.1f} Mbps | 冷卻中 ({remaining}s)"
+                    self.icon_color = "yellow"
+                    self._update_tray()
             else:
-                self.slow_count = 0  # 速度正常，重置低速計數
                 pool_info = self.mac_pool.get_summary()
                 self.icon_color = "green"
                 self.status_text = f"正常 {speed:.1f} Mbps | {pool_info}"
