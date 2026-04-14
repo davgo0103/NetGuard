@@ -112,6 +112,9 @@ def find_active_adapter(adapter_name: str = "auto") -> dict | None:
             if gw_guid:
                 for a in adapters:
                     if a["net_cfg_id"].strip("{}").lower() == gw_guid:
+                        if _is_excluded_adapter(a["driver_desc"]):
+                            logger.debug(f"Default gateway 是排除的網卡，跳過: {gw_desc}")
+                            break
                         logger.info(f"自動選擇網卡 (default gateway): {gw_name} ({gw_desc})")
                         return a
     except Exception as e:
@@ -161,7 +164,7 @@ def find_active_adapter(adapter_name: str = "auto") -> dict | None:
                 guid = line.strip().strip("{}")
                 for a in adapters:
                     if a["net_cfg_id"].strip("{}").lower() == guid.lower():
-                        if _is_virtual_adapter(a["driver_desc"]):
+                        if _is_excluded_adapter(a["driver_desc"]):
                             logger.debug(f"跳過虛擬/VPN 網卡: {a['driver_desc']}")
                             continue
                         logger.info(f"自動選擇網卡 (fallback): {a['driver_desc']}")
@@ -173,29 +176,33 @@ def find_active_adapter(adapter_name: str = "auto") -> dict | None:
     for a in adapters:
         desc = a["driver_desc"].lower()
         if any(kw in desc for kw in ["wi-fi", "wifi", "wireless", "ethernet", "realtek", "intel"]):
-            if not _is_virtual_adapter(a["driver_desc"]):
+            if not _is_excluded_adapter(a["driver_desc"]):
                 logger.info(f"自動選擇網卡 (keyword fallback): {a['driver_desc']}")
                 return a
 
     return adapters[0] if adapters else None
 
 
-# 已知的虛擬 / VPN 網卡關鍵字（小寫比對）
-_VIRTUAL_ADAPTER_KEYWORDS = [
-    "vpn", "virtual", "tap-", "tap ", "tun ", "wireguard", "warp",
-    "hyper-v", "vmware", "virtualbox", "vbox", "loopback",
-    "bluetooth", "miniport", "wan miniport", "teredo",
-    "6to4", "isatap", "fortinet", "forticlient", "juniper",
-    "cisco anyconnect", "pangp", "palo alto", "softether",
-    "nordlynx", "proton", "surfshark", "express",
-    "windscribe", "mullvad", "openvpn",
+# 已知應排除的網卡關鍵字（小寫比對）：虛擬 / VPN / Wi-Fi
+_EXCLUDED_ADAPTER_KEYWORDS = [
+    # Wi-Fi / 無線
+    "wi-fi", "wifi", "wireless", "wlan", "802.11",
+    # VPN
+    "vpn", "tap-", "tap ", "tun ", "wireguard", "warp",
+    "fortinet", "forticlient", "juniper", "cisco anyconnect",
+    "pangp", "palo alto", "softether", "nordlynx", "proton",
+    "surfshark", "express", "windscribe", "mullvad", "openvpn",
+    # 虛擬 / 其他
+    "virtual", "hyper-v", "vmware", "virtualbox", "vbox",
+    "loopback", "bluetooth", "miniport", "wan miniport",
+    "teredo", "6to4", "isatap",
 ]
 
 
-def _is_virtual_adapter(driver_desc: str) -> bool:
-    """根據驅動描述判斷是否為虛擬 / VPN 網卡。"""
+def _is_excluded_adapter(driver_desc: str) -> bool:
+    """根據驅動描述判斷是否應排除（虛擬 / VPN / Wi-Fi）。"""
     desc = driver_desc.lower()
-    return any(kw in desc for kw in _VIRTUAL_ADAPTER_KEYWORDS)
+    return any(kw in desc for kw in _EXCLUDED_ADAPTER_KEYWORDS)
 
 
 def get_adapter_interface_name(net_cfg_id: str) -> str | None:
