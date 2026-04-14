@@ -587,30 +587,18 @@ class NetGuardController:
         # 驗證新 MAC 是否可用
         verify_speed, verify_slow = self.speed_monitor.check_speed()
 
-        if verify_speed is None:
-            # 測速失敗，可能網路還沒恢復，先當作成功
-            pool_info = self.mac_pool.get_summary()
-            self.status_text = f"已切換至 {fmt_mac}（驗證失敗）| {pool_info}"
-            self.icon_color = "yellow"
-            self._update_tray()
-            self.logger.warning(f"切換後驗證測速失敗，保留 {fmt_mac}")
-            show_alert(
-                "NetGuard - MAC 已切換",
-                f"已切換至: {fmt_mac}\n驗證測速失敗，請留意網速",
-                alert_type="warning",
-                detail=self.mac_pool.get_summary()
-            )
-        elif verify_slow:
-            # 新 MAC 也是慢的，標記為限速並繼續切換下一個
-            self.logger.warning(f"{fmt_mac} 驗證失敗: {verify_speed:.1f} Mbps，標記限速")
+        if verify_speed is None or verify_slow:
+            # 驗證失敗或低速，標記為限速並直接切換下一個
+            speed_str = f"{verify_speed:.1f} Mbps" if verify_speed is not None else "測速失敗"
+            self.logger.warning(f"{fmt_mac} 驗證失敗: {speed_str}，標記限速")
             self.mac_pool.mark_throttled(next_mac)
             show_alert(
                 "NetGuard - MAC 驗證失敗",
-                f"{fmt_mac} 速度僅 {verify_speed:.1f} Mbps\n已標記為限速，自動切換下一個",
+                f"{fmt_mac}: {speed_str}\n已標記為限速，自動切換下一個",
                 alert_type="warning",
                 detail=self.mac_pool.get_summary()
             )
-            # 遞迴切換下一個（冷卻時間已更新，不會無限迴圈因為 MAC 會用完）
+            # 遞迴切換下一個（MAC 用完時 pool_exhausted 會停止遞迴）
             self._do_mac_switch()
         else:
             # 驗證通過
