@@ -406,11 +406,14 @@ class NetGuardController:
                 if self.fail_count >= self.max_fails_before_switch:
                     self._handle_network_failure(f"連續 {self.fail_count} 次無法連線")
                 else:
-                    time.sleep(30)
+                    time.sleep(10)  # 已知異常，縮短等待加速重試
                 continue
 
-            # 測速前：檢查系統是否正在大量下載
-            busy, sys_bw = self.speed_monitor.is_system_busy()
+            # 測速前：檢查系統是否正在大量下載（失敗追蹤中則跳過，已知有問題不需再量）
+            if self.fail_count == 0:
+                busy, sys_bw = self.speed_monitor.is_system_busy()
+            else:
+                busy = False
             if busy:
                 self.logger.info(
                     f"系統正在使用網路 ({sys_bw:.1f} Mbps)，跳過本次測速"
@@ -440,7 +443,7 @@ class NetGuardController:
                 if self.fail_count >= self.max_fails_before_switch:
                     self._handle_network_failure(f"連續 {self.fail_count} 次測速失敗")
                 else:
-                    time.sleep(30)
+                    time.sleep(10)  # 已知異常，縮短等待加速重試
                 continue
 
             # 測速成功，重置失敗計數

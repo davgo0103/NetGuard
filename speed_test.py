@@ -97,7 +97,7 @@ def quick_connectivity_check() -> bool:
     for host in test_hosts:
         try:
             req = urllib.request.Request(host, headers={"User-Agent": "NetGuard/1.0"})
-            urllib.request.urlopen(req, timeout=5)
+            urllib.request.urlopen(req, timeout=3)
             return True
         except Exception:
             continue

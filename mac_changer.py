@@ -242,14 +242,14 @@ def restart_adapter(adapter: dict) -> bool:
             logger.warning(f"netsh disable 失敗: {result.stderr.strip()}")
             return _restart_via_powershell(adapter)
 
-        time.sleep(2)
+        time.sleep(1)
 
         result = _run_cmd(["netsh", "interface", "set", "interface", iface_name, "enabled"])
         if result.returncode != 0:
             logger.warning(f"netsh enable 失敗: {result.stderr.strip()}")
             return False
 
-        time.sleep(5)
+        time.sleep(3)
         logger.info("網卡已重新啟用")
         return True
     except subprocess.TimeoutExpired:
