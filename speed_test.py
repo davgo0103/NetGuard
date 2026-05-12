@@ -50,9 +50,10 @@ def _download(url: str, timeout: int) -> tuple[int, float] | None:
 
 def measure_download_speed(timeout: int = 15) -> float | None:
     """
-    兩階段測速：
+    兩階段測速（降低誤判）：
     1. 先下載小檔（~250KB）快速判斷速度
-    2. 若速度 > 10 Mbps，再下載大檔（~4.5MB）取得更準確結果
+    2. 若速度 >= 5 Mbps，測大檔（~4.5MB）取得穩定結果
+       （< 5 Mbps 直接返回，確認是真限速）
     每次消耗約 0.25 ~ 5 MB。
     """
     _patch_stdio()
@@ -68,12 +69,12 @@ def measure_download_speed(timeout: int = 15) -> float | None:
         total_bytes, elapsed = result
         mbps = (total_bytes * 8) / (elapsed * 1_000_000)
 
-        # 若速度很低（被限速），小檔結果就夠用了
-        if mbps < 10:
+        # 若速度非常低（< 5 Mbps），確認是限速，小檔結果夠用
+        if mbps < 5:
             logger.info(f"測速: {mbps:.2f} Mbps ({total_bytes/1000:.0f} KB / {elapsed:.1f}s) [{name}]")
             return mbps
 
-        # 第二階段：速度正常，用大檔測更準確
+        # 速度 >= 5 Mbps，測大檔以得到更穩定的結果（避免小檔波動誤判）
         big_url = f"{base}/random1500x1500.jpg"
         result2 = _download(big_url, timeout=timeout)
         if result2:
@@ -135,12 +136,20 @@ class SpeedMonitor:
         self.last_check_time: float = 0
         self.history: list[tuple[float, float]] = []
         self.max_history = 50
-        self.skipped_busy: bool = False  # 上次是否因使用者下載而跳過
+        # 滑動視窗：比較最近 3 次測速的平均 vs 閾值（避免單次波動誤判）
+        self.slow_window_size = 3
 
     def is_system_busy(self) -> tuple[bool, float]:
         """檢查系統是否正在大量使用網路。回傳 (is_busy, current_mbps)。"""
         bandwidth = measure_system_bandwidth(interval=2.0)
         return bandwidth >= self.BUSY_THRESHOLD_MBPS, bandwidth
+
+    def get_recent_average(self, last_n: int = 3) -> float | None:
+        """取得最近 N 次測速的平均。"""
+        if not self.history or len(self.history) < last_n:
+            return None
+        recent = self.history[-last_n:]
+        return sum(s for _, s in recent) / len(recent)
 
     def check_speed(self) -> tuple[float | None, bool]:
         speed = measure_download_speed()
@@ -152,9 +161,29 @@ class SpeedMonitor:
             if len(self.history) > self.max_history:
                 self.history = self.history[-self.max_history:]
 
-        is_slow = speed is not None and speed < self.threshold_mbps
-        if is_slow:
-            logger.warning(f"網速低於閾值: {speed:.2f} Mbps < {self.threshold_mbps} Mbps")
+        # 判斷是否真的限速：單次低速 + 近期平均也低速
+        is_slow = False
+        if speed is not None and speed < self.threshold_mbps:
+            # 有歷史記錄時，檢查最近 3 次的平均
+            avg = self.get_recent_average(self.slow_window_size)
+            if avg is not None and avg < self.threshold_mbps:
+                is_slow = True
+                logger.warning(
+                    f"網速確認限速: 本次 {speed:.2f} Mbps, "
+                    f"近 {self.slow_window_size} 次平均 {avg:.2f} Mbps "
+                    f"< 閾值 {self.threshold_mbps} Mbps"
+                )
+            elif avg is None:
+                # 首次低速，採信單次結果但只當警告
+                is_slow = True
+                logger.warning(f"網速低於閾值: {speed:.2f} Mbps < {self.threshold_mbps} Mbps（首次檢測）")
+            else:
+                # 單次低但平均仍高，可能是波動
+                logger.debug(
+                    f"網速單次低於閾值但平均正常: 本次 {speed:.2f} Mbps, "
+                    f"近 {self.slow_window_size} 次平均 {avg:.2f} Mbps (忽略)"
+                )
+
         return speed, is_slow
 
     def get_average_speed(self, last_n: int = 5) -> float | None:
