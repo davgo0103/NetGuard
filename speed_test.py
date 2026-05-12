@@ -161,28 +161,30 @@ class SpeedMonitor:
             if len(self.history) > self.max_history:
                 self.history = self.history[-self.max_history:]
 
-        # 判斷是否真的限速：單次低速 + 近期平均也低速
+        # 判斷是否真的限速：需要近期多次確認，避免單次波動誤判
         is_slow = False
         if speed is not None and speed < self.threshold_mbps:
-            # 有歷史記錄時，檢查最近 3 次的平均
             avg = self.get_recent_average(self.slow_window_size)
             if avg is not None and avg < self.threshold_mbps:
+                # 近期 3 次平均都低，確認限速
                 is_slow = True
                 logger.warning(
                     f"網速確認限速: 本次 {speed:.2f} Mbps, "
                     f"近 {self.slow_window_size} 次平均 {avg:.2f} Mbps "
                     f"< 閾值 {self.threshold_mbps} Mbps"
                 )
-            elif avg is None:
-                # 首次低速，採信單次結果但只當警告
-                is_slow = True
-                logger.warning(f"網速低於閾值: {speed:.2f} Mbps < {self.threshold_mbps} Mbps（首次檢測）")
             else:
-                # 單次低但平均仍高，可能是波動
-                logger.debug(
-                    f"網速單次低於閾值但平均正常: 本次 {speed:.2f} Mbps, "
-                    f"近 {self.slow_window_size} 次平均 {avg:.2f} Mbps (忽略)"
-                )
+                # 首次低速或單次低但平均正常 → 先觀察，不確認
+                if avg is None:
+                    logger.info(
+                        f"網速首次低於閾值: {speed:.2f} Mbps < {self.threshold_mbps} Mbps "
+                        f"(需要連續確認)"
+                    )
+                else:
+                    logger.debug(
+                        f"網速單次波動: 本次 {speed:.2f} Mbps, "
+                        f"近 {self.slow_window_size} 次平均 {avg:.2f} Mbps (忽略)"
+                    )
 
         return speed, is_slow
 
